@@ -1,0 +1,170 @@
+name: Deploy (reusable)
+
+on:
+    workflow_call:
+        inputs:
+            environment:
+                required: true
+                type: string
+            bicepParamFile:
+                required: true
+                type: string
+
+permissions:
+    id-token: write
+    contents: read
+
+jobs:
+    deploy:
+        name: ${{ inputs.environment }}
+        runs-on: ubuntu-latest
+        environment: ${{ inputs.environment }}
+        env:
+            SQL_ADMIN_OBJECT_ID: ${{ vars.SQL_ADMIN_OBJECT_ID }}
+            SQL_ADMIN_PRINCIPAL_NAME: ${{ vars.SQL_ADMIN_PRINCIPAL_NAME }}
+            AZURE_DEPLOYER_OBJECT_ID: ${{ vars.AZURE_DEPLOYER_OBJECT_ID }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: azure/login@v2
+              with:
+                  client-id: ${{ vars.AZURE_CLIENT_ID }}
+                  tenant-id: ${{ vars.AZURE_TENANT_ID }}
+                  subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+            # ---------- Infra ----------
+            - name: Ensure resource group
+              run: |
+                  az group create \
+                    --name "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --location "${{ vars.AZURE_LOCATION }}" \
+                    --tags workload=notes environment=${{ inputs.environment }} managed-by=bicep >/dev/null
+
+            - name: Deploy Bicep
+              id: bicep
+              run: |
+                  outputs=$(az deployment group create \
+                    --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --template-file infra/main.bicep \
+                    --parameters "${{ inputs.bicepParamFile }}" \
+                    --query properties.outputs \
+                    -o json)
+                  echo "$outputs" | jq -r 'to_entries[] | "\(.key)=\(.value.value)"' >> "$GITHUB_OUTPUT"
+
+            # ---------- Secrets ----------
+            - name: Seed JWT signing key (if missing)
+              env:
+                  KV_NAME: ${{ steps.bicep.outputs.keyVaultName }}
+              run: |
+                  if ! az keyvault secret show --vault-name "$KV_NAME" --name jwt-signing-key >/dev/null 2>&1; then
+                    echo "Creating jwt-signing-key"
+                    value=$(openssl rand -base64 64 | tr -d '\n')
+                    az keyvault secret set --vault-name "$KV_NAME" --name jwt-signing-key --value "$value" --only-show-errors >/dev/null
+                  else
+                    echo "jwt-signing-key already exists"
+                  fi
+
+            # ---------- SQL: grant App Service MI access ----------
+            - name: Grant App Service MI access to SQL DB
+              env:
+                  SQL_SERVER: ${{ steps.bicep.outputs.sqlServerName }}
+                  SQL_DB: ${{ steps.bicep.outputs.sqlDatabaseName }}
+                  APP_NAME: ${{ steps.bicep.outputs.appServiceName }}
+                  APP_MI_ID: ${{ steps.bicep.outputs.appServicePrincipalId }}
+              run: |
+                  set -euo pipefail
+                  fqdn="${SQL_SERVER}.database.windows.net"
+
+                  # Allow this runner's public IP temporarily so sqlcmd can connect.
+                  runner_ip=$(curl -s https://api.ipify.org)
+                  az sql server firewall-rule create \
+                    --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --server "$SQL_SERVER" \
+                    --name "gh-runner-${{ github.run_id }}" \
+                    --start-ip-address "$runner_ip" \
+                    --end-ip-address "$runner_ip" >/dev/null
+
+                  # Install sqlcmd (go edition).
+                  curl -fsSL https://github.com/microsoft/go-sqlcmd/releases/download/v1.8.0/sqlcmd-linux-amd64.tar.bz2 \
+                    | tar -xj -C /tmp
+                  sudo mv /tmp/sqlcmd /usr/local/bin/sqlcmd
+
+                  # Acquire access token as the deployer SP (already logged in via OIDC).
+                  token=$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)
+
+                  cat <<SQL > /tmp/grant.sql
+                  IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'${APP_NAME}')
+                  BEGIN
+                      CREATE USER [${APP_NAME}] FROM EXTERNAL PROVIDER;
+                  END
+                  ALTER ROLE db_datareader ADD MEMBER [${APP_NAME}];
+                  ALTER ROLE db_datawriter ADD MEMBER [${APP_NAME}];
+                  ALTER ROLE db_ddladmin  ADD MEMBER [${APP_NAME}];
+                  SQL
+
+                  sqlcmd -S "$fqdn" -d "$SQL_DB" --access-token "$token" -i /tmp/grant.sql
+
+                  # Clean up firewall rule.
+                  az sql server firewall-rule delete \
+                    --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --server "$SQL_SERVER" \
+                    --name "gh-runner-${{ github.run_id }}" >/dev/null
+
+            # ---------- Backend ----------
+            - uses: actions/download-artifact@v4
+              with:
+                  name: api
+                  path: .
+
+            - name: Deploy API
+              uses: azure/webapps-deploy@v3
+              with:
+                  app-name: ${{ steps.bicep.outputs.appServiceName }}
+                  package: api.zip
+
+            # ---------- Frontend ----------
+            - uses: actions/download-artifact@v4
+              with:
+                  name: frontend-src
+                  path: frontend-src
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+
+            - name: Build frontend with environment API URL
+              working-directory: frontend-src
+              env:
+                  VITE_API_BASE_URL: https://${{ steps.bicep.outputs.appServiceDefaultHostName }}
+              run: |
+                  npm ci
+                  npm run build
+
+            - name: Get SWA deployment token
+              id: swa
+              run: |
+                  token=$(az staticwebapp secrets list \
+                    --name "${{ steps.bicep.outputs.staticWebAppName }}" \
+                    --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --query properties.apiKey -o tsv)
+                  echo "::add-mask::$token"
+                  echo "token=$token" >> "$GITHUB_OUTPUT"
+
+            - name: Deploy SWA
+              uses: Azure/static-web-apps-deploy@v1
+              with:
+                  azure_static_web_apps_api_token: ${{ steps.swa.outputs.token }}
+                  action: upload
+                  app_location: frontend-src/dist
+                  skip_app_build: true
+                  skip_api_build: true
+
+            - name: Summary
+              run: |
+                  {
+                    echo "## Deployment (${{ inputs.environment }})";
+                    echo "- API:      https://${{ steps.bicep.outputs.appServiceDefaultHostName }}";
+                    echo "- SWA:      https://${{ steps.bicep.outputs.staticWebAppDefaultHostName }}";
+                    echo "- SQL:      ${{ steps.bicep.outputs.sqlServerName }} / ${{ steps.bicep.outputs.sqlDatabaseName }}";
+                    echo "- KeyVault: ${{ steps.bicep.outputs.keyVaultName }}";
+                  } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,95 @@
+name: CD
+
+on:
+    push:
+        branches: [ main ]
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: Target environment
+                required: true
+                default: dev
+                type: choice
+                options: [ dev, prod ]
+
+permissions:
+    id-token: write
+    contents: read
+
+concurrency:
+    group: cd-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    build-backend:
+        name: Build backend
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "10.x"
+            - name: Publish
+              run: |
+                  dotnet publish backend/Notes.Api/Notes.Api.csproj \
+                    --configuration Release \
+                    --runtime linux-x64 \
+                    --self-contained false \
+                    --output ./publish
+            - name: Zip
+              run: |
+                  cd publish
+                  zip -r ../api.zip .
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: api
+                  path: api.zip
+                  retention-days: 7
+
+    build-frontend:
+        name: Build frontend
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+                  cache: npm
+                  cache-dependency-path: frontend/package-lock.json
+            - run: npm ci
+              working-directory: frontend
+            - name: Build (base URL set at deploy time)
+              run: npm run build
+              working-directory: frontend
+              env:
+                  # The API base URL is stamped in per-environment during deploy by
+                  # rebuilding there. This build is for CI sanity only.
+                  VITE_API_BASE_URL: https://placeholder.invalid
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: frontend-src
+                  path: |
+                      frontend
+                      !frontend/node_modules
+                      !frontend/dist
+                  retention-days: 1
+
+    deploy-dev:
+        name: Deploy dev
+        needs: [ build-backend, build-frontend ]
+        if: github.event_name == 'push' || github.event.inputs.environment == 'dev'
+        uses: ./.github/workflows/_deploy.yml
+        with:
+            environment: dev
+            bicepParamFile: infra/main.dev.bicepparam
+        secrets: inherit
+
+    deploy-prod:
+        name: Deploy prod
+        needs: [ deploy-dev ]
+        if: github.event_name == 'push' || github.event.inputs.environment == 'prod'
+        uses: ./.github/workflows/_deploy.yml
+        with:
+            environment: prod
+            bicepParamFile: infra/main.prod.bicepparam
+        secrets: inherit

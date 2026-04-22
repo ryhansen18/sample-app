@@ -1,0 +1,57 @@
+name: Infra what-if
+
+on:
+    pull_request:
+        branches: [ main ]
+        paths:
+            - "infra/**"
+            - ".github/workflows/infra-validate.yml"
+
+permissions:
+    id-token: write
+    contents: read
+    pull-requests: write
+
+concurrency:
+    group: infra-whatif-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    whatif:
+        name: What-if (dev)
+        runs-on: ubuntu-latest
+        environment: dev
+        env:
+            SQL_ADMIN_OBJECT_ID: ${{ vars.SQL_ADMIN_OBJECT_ID }}
+            SQL_ADMIN_PRINCIPAL_NAME: ${{ vars.SQL_ADMIN_PRINCIPAL_NAME }}
+            AZURE_DEPLOYER_OBJECT_ID: ${{ vars.AZURE_DEPLOYER_OBJECT_ID }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: azure/login@v2
+              with:
+                  client-id: ${{ vars.AZURE_CLIENT_ID }}
+                  tenant-id: ${{ vars.AZURE_TENANT_ID }}
+                  subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+            - name: Ensure resource group
+              run: |
+                  az group create \
+                    --name "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --location "${{ vars.AZURE_LOCATION }}" \
+                    --tags workload=notes environment=dev managed-by=bicep >/dev/null
+
+            - name: What-if
+              run: |
+                  az deployment group what-if \
+                    --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+                    --template-file infra/main.bicep \
+                    --parameters infra/main.dev.bicepparam \
+                    --no-pretty-print \
+                    > whatif.txt || true
+                  {
+                    echo '### Bicep what-if (dev)';
+                    echo '```';
+                    cat whatif.txt;
+                    echo '```';
+                  } >> "$GITHUB_STEP_SUMMARY"

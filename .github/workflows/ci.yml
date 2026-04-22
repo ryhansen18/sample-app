@@ -1,0 +1,77 @@
+name: CI
+
+on:
+    pull_request:
+        branches: [ main ]
+    push:
+        branches: [ main ]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ci-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    backend:
+        name: Backend build & test
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: backend
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "10.x"
+
+            - name: Cache NuGet
+              uses: actions/cache@v4
+              with:
+                  path: ~/.nuget/packages
+                  key: ${{ runner.os }}-nuget-${{ hashFiles('backend/**/*.csproj') }}
+                  restore-keys: ${{ runner.os }}-nuget-
+
+            - run: dotnet restore
+            - run: dotnet build --no-restore --configuration Release
+            - run: dotnet test --no-build --configuration Release --logger
+                  "trx;LogFileName=test-results.trx"
+
+            - name: Upload test results
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: backend-test-results
+                  path: backend/**/TestResults/*.trx
+                  if-no-files-found: ignore
+
+    frontend:
+        name: Frontend build & test
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: frontend
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+                  cache: npm
+                  cache-dependency-path: frontend/package-lock.json
+
+            - run: npm ci
+            - run: npm run lint
+            - run: npm run typecheck
+            - run: npm test -- --run
+            - run: npm run build
+
+    bicep:
+        name: Bicep lint & build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Build main.bicep
+              run: az bicep build --file infra/main.bicep
