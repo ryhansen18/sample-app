@@ -38,14 +38,9 @@ public sealed class AuthController(
                     _ => ""
                 };
 
-                if (!errors.TryGetValue(key, out var existing))
-                {
-                    errors[key] = new[] { err.Description };
-                }
-                else
-                {
-                    errors[key] = existing.Append(err.Description).ToArray();
-                }
+                errors[key] = !errors.TryGetValue(key, out var existing)
+                    ? new[] { err.Description }
+                    : existing.Append(err.Description).ToArray();
             }
 
             return ValidationProblem(new ValidationProblemDetails(errors));
