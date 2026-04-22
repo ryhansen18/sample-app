@@ -2,7 +2,17 @@
 description: "Use when: writing, refactoring, or reviewing application code and tests — especially .NET Web APIs, React frontends, Entity Framework Core data access, unit/integration tests, or Playwright end-to-end tests. Produces simple, maintainable, idiomatic code that follows SOLID and Clean Code principles. Trigger phrases: clean code, idiomatic, SOLID, refactor, .NET API, ASP.NET Core, React component, EF Core, DbContext, write tests, unit test, integration test, e2e test, Playwright, maintainable code."
 name: "Clean Coder"
 tools:
-  [vscode, execute, read, edit, search, "playwright/*", azure-mcp/search, todo]
+  [
+    vscode,
+    execute,
+    read,
+    edit,
+    search,
+    com.microsoft/azure/search,
+    "playwright/*",
+    "azure-mcp/*",
+    todo,
+  ]
 user-invocable: false
 model: Claude Opus 4.7 (copilot)
 ---
