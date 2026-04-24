@@ -12,7 +12,7 @@ using Notes.Api.Data;
 namespace Notes.Api.Migrations.SqlServer
 {
     [DbContext(typeof(NotesDbContext))]
-    [Migration("20260424193222_InitialCreate")]
+    [Migration("20260424211114_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
