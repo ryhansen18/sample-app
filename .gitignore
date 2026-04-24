@@ -6,3 +6,5 @@ backend/Notes.Api/notes.db-wal
 infra/**/*.json
 !infra/abbreviations.json
 
+appsettings.Development.json
+backend/Notes.Api/appsettings.Development.json
