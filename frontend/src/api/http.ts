@@ -43,7 +43,8 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
         headers.set('Authorization', `Bearer ${token}`)
     }
 
-    const response = await fetch(url, { ...init, headers })
+    const base = import.meta.env.VITE_API_URL ?? ''
+    const response = await fetch(`${base}${url}`, { ...init, headers })
 
     if (response.status === 401) {
         onUnauthorized()

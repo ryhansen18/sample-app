@@ -12,7 +12,7 @@ builder.Services.AddAppAuthentication(builder.Configuration);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy => policy
-        .WithOrigins("http://localhost:5173")
+        .WithOrigins("http://localhost:5173", "https://yellow-beach-052d55b0f.7.azurestaticapps.net")
         .AllowAnyHeader()
         .AllowAnyMethod());
 });

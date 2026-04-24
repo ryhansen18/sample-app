@@ -1,0 +1,43 @@
+name: Deploy API to Azure
+
+on:
+  push:
+    branches: [main]
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build
+        run: dotnet build --configuration Release
+      - name: Test
+        run: dotnet test Notes.sln --no-build --configuration Release
+        continue-on-error: true
+      - name: Publish
+        run: dotnet publish Notes.Api -c Release -o ./output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api
+          path: backend/output
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: api
+          path: ./output
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: notes-api-ryan
+          package: ./output
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
